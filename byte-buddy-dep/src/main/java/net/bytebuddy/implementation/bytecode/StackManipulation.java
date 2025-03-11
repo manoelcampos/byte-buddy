@@ -27,6 +27,20 @@ import java.util.List;
  * Describes a manipulation of a method's operand stack that does not affect the frame's variable array.
  */
 public interface StackManipulation {
+    /**
+     * Indicates that no stack manipulation is to be applied.
+     */
+    StackManipulation NONE = new StackManipulation() {
+        @Override
+        public boolean isValid() {
+            return false;
+        }
+
+        @Override
+        public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
+            return new Size(0, 0);
+        }
+    };
 
     /**
      * Determines if this stack manipulation is valid.

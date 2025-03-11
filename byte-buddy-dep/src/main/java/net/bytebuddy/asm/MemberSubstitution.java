@@ -1558,7 +1558,12 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                                              JavaConstant.MethodHandle methodHandle,
                                              StackManipulation stackManipulation,
                                              int freeOffset) {
-                MethodDescription methodDescription = methodResolver.resolve(target, parameters, result);
+                final Optional<MethodDescription> optional = methodResolver.resolve(target, parameters, result);
+                if(!optional.isPresent()){
+                    return StackManipulation.NONE;
+                }
+
+                final MethodDescription methodDescription = optional.get();
                 if (!methodDescription.isAccessibleTo(instrumentedType)) {
                     throw new IllegalStateException(instrumentedType + " cannot access " + methodDescription);
                 }
@@ -1591,7 +1596,7 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                  * @param result     The result that is expected from the interaction or {@code void} if no result is expected.
                  * @return The field to substitute with.
                  */
-                MethodDescription resolve(Target target, TypeList.Generic parameters, TypeDescription.Generic result);
+                Optional<MethodDescription> resolve(Target target, TypeList.Generic parameters, TypeDescription.Generic result);
 
                 /**
                  * A simple method resolver that returns a given method.
@@ -1616,8 +1621,8 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                     /**
                      * {@inheritDoc}
                      */
-                    public MethodDescription resolve(Target target, TypeList.Generic parameters, TypeDescription.Generic result) {
-                        return methodDescription;
+                    public Optional<MethodDescription> resolve(Target target, TypeList.Generic parameters, TypeDescription.Generic result) {
+                        return Optional.of(methodDescription);
                     }
                 }
 
@@ -1658,7 +1663,7 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                     /**
                      * {@inheritDoc}
                      */
-                    public MethodDescription resolve(Target target, TypeList.Generic parameters, TypeDescription.Generic result) {
+                    public Optional<MethodDescription> resolve(Target target, TypeList.Generic parameters, TypeDescription.Generic result) {
                         if (parameters.isEmpty()) {
                             throw new IllegalStateException("Cannot substitute parameterless instruction with " + parameters);
                         } else if (parameters.get(0).isPrimitive() || parameters.get(0).isArray()) {
@@ -1668,8 +1673,10 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                         List<MethodDescription> candidates = CompoundList.<MethodDescription>of(methodGraphCompiler.compile(typeDefinition, instrumentedType).listNodes()
                                 .asMethodList()
                                 .filter(matcher), typeDefinition.getDeclaredMethods().filter(isPrivate().<MethodDescription>and(isVisibleTo(instrumentedType)).and(matcher)));
-                        if (candidates.size() == 1) {
-                            return candidates.get(0);
+                        if (candidates.isEmpty()) {
+                            return Optional.empty();
+                        } else if (candidates.size() == 1) {
+                            return Optional.of(candidates.get(0));
                         } else {
                             throw new IllegalStateException("Not exactly one method that matches " + matcher + ": " + candidates);
                         }
@@ -7338,7 +7345,7 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
              * @param methodHandle      A method handle that represents the original expression that is being substituted.
              * @param stackManipulation The original byte code expression that is being substituted.
              * @param freeOffset        The first offset that can be used for storing local variables.
-             * @return A stack manipulation that represents the replacement.
+             * @return A stack manipulation that represents the replacement or {@link StackManipulation#NONE} if no replacement is to be applied.
              */
             StackManipulation make(TypeList.Generic parameters,
                                    TypeDescription.Generic result,
@@ -8279,16 +8286,19 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                             default:
                                 throw new IllegalStateException("Unexpected opcode: " + opcode);
                         }
-                        stackSizeBuffer = Math.max(stackSizeBuffer, binding.make(parameters,
-                                result,
-                                read
-                                        ? JavaConstant.MethodHandle.ofGetter(candidates.getOnly().asDefined())
-                                        : JavaConstant.MethodHandle.ofSetter(candidates.getOnly().asDefined()),
-                                read
-                                        ? FieldAccess.forField(candidates.getOnly()).read()
-                                        : FieldAccess.forField(candidates.getOnly()).write(),
-                                getFreeOffset()).apply(new LocalVariableTracingMethodVisitor(mv), implementationContext).getMaximalSize());
-                        matched = true;
+
+                        final StackManipulation sm = binding.make(parameters,
+                                                              result,
+                                                              read
+                                                                      ? JavaConstant.MethodHandle.ofGetter(candidates.getOnly().asDefined())
+                                                                      : JavaConstant.MethodHandle.ofSetter(candidates.getOnly().asDefined()),
+                                                              read
+                                                                      ? FieldAccess.forField(candidates.getOnly()).read()
+                                                                      : FieldAccess.forField(candidates.getOnly()).write(),
+                                                              getFreeOffset());
+                        final int maximalSize = sm.apply(new LocalVariableTracingMethodVisitor(mv), implementationContext).getMaximalSize();
+                        stackSizeBuffer = Math.max(stackSizeBuffer, maximalSize);
+                        matched = sm.isValid();
                         return;
                     }
                 } else if (strict) {
@@ -8341,19 +8351,30 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                             candidates.getOnly(),
                             Replacement.InvocationType.of(opcode, candidates.getOnly()));
                     if (binding.isBound()) {
-                        StackManipulation.Size size = binding.make(
+                        final StackManipulation sm = binding.make(
                                 candidates.getOnly().isStatic() || candidates.getOnly().isConstructor()
                                         ? candidates.getOnly().getParameters().asTypeList()
-                                        : new TypeList.Generic.Explicit(CompoundList.of(resolution.resolve(), candidates.getOnly().getParameters().asTypeList())),
+                                        : new TypeList.Generic.Explicit(CompoundList.of(resolution.resolve(), candidates
+                                        .getOnly()
+                                        .getParameters()
+                                        .asTypeList())),
                                 candidates.getOnly().isConstructor()
                                         ? candidates.getOnly().getDeclaringType().asGenericType()
                                         : candidates.getOnly().getReturnType(),
-                                opcode == Opcodes.INVOKESPECIAL && candidates.getOnly().isMethod() && !candidates.getOnly().isPrivate()
-                                        ? JavaConstant.MethodHandle.ofSpecial(candidates.getOnly().asDefined(), resolution.resolve())
+                                opcode == Opcodes.INVOKESPECIAL && candidates.getOnly().isMethod() && !candidates
+                                        .getOnly()
+                                        .isPrivate()
+                                        ? JavaConstant.MethodHandle.ofSpecial(candidates
+                                                                                      .getOnly()
+                                                                                      .asDefined(), resolution.resolve())
                                         : JavaConstant.MethodHandle.of(candidates.getOnly().asDefined()),
-                                opcode == Opcodes.INVOKESPECIAL && candidates.getOnly().isMethod() && !candidates.getOnly().isPrivate()
+                                opcode == Opcodes.INVOKESPECIAL && candidates.getOnly().isMethod() && !candidates
+                                        .getOnly()
+                                        .isPrivate()
                                         ? MethodInvocation.invoke(candidates.getOnly()).special(resolution.resolve())
-                                        : MethodInvocation.invoke(candidates.getOnly()), getFreeOffset()).apply(new LocalVariableTracingMethodVisitor(mv), implementationContext);
+                                        : MethodInvocation.invoke(candidates.getOnly()), getFreeOffset());
+
+                        StackManipulation.Size size = sm.apply(new LocalVariableTracingMethodVisitor(mv), implementationContext);
                         if (candidates.getOnly().isConstructor()) {
                             stackSizeBuffer = Math.max(stackSizeBuffer, size.getMaximalSize() + 2);
                             stackSizeBuffer = Math.max(stackSizeBuffer, new StackManipulation.Compound(Duplication.SINGLE.flipOver(TypeDescription.ForLoadedType.of(Object.class)),
@@ -8365,7 +8386,7 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                         } else {
                             stackSizeBuffer = Math.max(stackSizeBuffer, size.getMaximalSize());
                         }
-                        matched = true;
+                        matched = sm.isValid();
                         return;
                     }
                 } else if (strict) {
@@ -8403,13 +8424,15 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                         name,
                         constants);
                 if (binding.isBound()) {
-                    StackManipulation.Size size = binding.make(methodType.getParameterTypes().asGenericTypes(),
-                            methodType.getReturnType().asGenericType(),
-                            methodHandle,
-                            new Invokedynamic(name, methodType, methodHandle, constants),
-                            getFreeOffset()).apply(new LocalVariableTracingMethodVisitor(mv), implementationContext);
+                    final StackManipulation sm = binding.make(methodType.getParameterTypes().asGenericTypes(),
+                                                                       methodType.getReturnType().asGenericType(),
+                                                                       methodHandle,
+                                                                       new Invokedynamic(name, methodType, methodHandle, constants),
+                                                                       getFreeOffset());
+
+                    StackManipulation.Size size = sm.apply(new LocalVariableTracingMethodVisitor(mv), implementationContext);
                     stackSizeBuffer = Math.max(stackSizeBuffer, size.getMaximalSize());
-                    matched = true;
+                    matched = sm.isValid();
                     return;
                 }
             }
