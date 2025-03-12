@@ -53,6 +53,7 @@ import net.bytebuddy.utility.visitor.LocalVariableAwareMethodVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
+import javax.annotation.Nullable;
 import java.io.Serializable;
 import java.lang.annotation.*;
 import java.lang.reflect.Constructor;
@@ -1558,12 +1559,11 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                                              JavaConstant.MethodHandle methodHandle,
                                              StackManipulation stackManipulation,
                                              int freeOffset) {
-                final Optional<MethodDescription> optional = methodResolver.resolve(target, parameters, result);
-                if(!optional.isPresent()){
+                final MethodDescription methodDescription = methodResolver.resolve(target, parameters, result);
+                if(methodDescription == null){
                     return StackManipulation.NONE;
                 }
 
-                final MethodDescription methodDescription = optional.get();
                 if (!methodDescription.isAccessibleTo(instrumentedType)) {
                     throw new IllegalStateException(instrumentedType + " cannot access " + methodDescription);
                 }
@@ -1594,9 +1594,10 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                  * @param target     The target member of invokedynamic invocation.
                  * @param parameters All parameters that serve as input to this access.
                  * @param result     The result that is expected from the interaction or {@code void} if no result is expected.
-                 * @return The field to substitute with.
+                 * @return The method to substitute with, or null if the method was not found and no substitution must be performed
                  */
-                Optional<MethodDescription> resolve(Target target, TypeList.Generic parameters, TypeDescription.Generic result);
+                @Nullable
+                MethodDescription resolve(Target target, TypeList.Generic parameters, TypeDescription.Generic result);
 
                 /**
                  * A simple method resolver that returns a given method.
@@ -1621,8 +1622,8 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                     /**
                      * {@inheritDoc}
                      */
-                    public Optional<MethodDescription> resolve(Target target, TypeList.Generic parameters, TypeDescription.Generic result) {
-                        return Optional.of(methodDescription);
+                    public MethodDescription resolve(Target target, TypeList.Generic parameters, TypeDescription.Generic result) {
+                        return methodDescription;
                     }
                 }
 
@@ -1663,7 +1664,7 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                     /**
                      * {@inheritDoc}
                      */
-                    public Optional<MethodDescription> resolve(Target target, TypeList.Generic parameters, TypeDescription.Generic result) {
+                    public MethodDescription resolve(Target target, TypeList.Generic parameters, TypeDescription.Generic result) {
                         if (parameters.isEmpty()) {
                             throw new IllegalStateException("Cannot substitute parameterless instruction with " + parameters);
                         } else if (parameters.get(0).isPrimitive() || parameters.get(0).isArray()) {
@@ -1674,9 +1675,12 @@ public class MemberSubstitution implements AsmVisitorWrapper.ForDeclaredMethods.
                                 .asMethodList()
                                 .filter(matcher), typeDefinition.getDeclaredMethods().filter(isPrivate().<MethodDescription>and(isVisibleTo(instrumentedType)).and(matcher)));
                         if (candidates.isEmpty()) {
-                            return Optional.empty();
+                            /* TODO: There is a warning caused by a @ByDefault annotation I don't see where it comes from:
+                              'null' is returned by the method declared as @ByDefault
+                            */
+                            return null;
                         } else if (candidates.size() == 1) {
-                            return Optional.of(candidates.get(0));
+                            return candidates.get(0);
                         } else {
                             throw new IllegalStateException("Not exactly one method that matches " + matcher + ": " + candidates);
                         }
