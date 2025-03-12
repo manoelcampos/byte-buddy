@@ -31,15 +31,8 @@ public interface StackManipulation {
      * Indicates that no stack manipulation is to be applied.
      */
     StackManipulation NONE = new StackManipulation() {
-        @Override
-        public boolean isValid() {
-            return false;
-        }
-
-        @Override
-        public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
-            return new Size(0, 0);
-        }
+        @Override public boolean isValid() { return false; }
+        @Override public Size apply(MethodVisitor v, Implementation.Context c) { return new Size(0, 0); }
     };
 
     /**
