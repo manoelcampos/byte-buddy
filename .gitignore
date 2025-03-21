@@ -22,3 +22,7 @@ build/
 
 #jRebel
 rebel.xml
+
+**/dependency-reduced-pom.xml
+**/gradle-wrapper.jar
+**/maven-wrapper.jar
